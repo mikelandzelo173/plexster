@@ -1,0 +1,8 @@
+services:
+  plexster:
+    build: .
+    image: plexster:latest
+    container_name: plexster
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
