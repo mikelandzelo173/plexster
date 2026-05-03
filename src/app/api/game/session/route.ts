@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { createGameSession, getCurrentTrack, MAX_GAME_TRACKS, toPublicTrack } from "@/lib/game/queue";
+import { createGameSession, getCurrentTrack, toPublicTrack } from "@/lib/game/queue";
 import { getPlaylistTracks, getResource } from "@/lib/plex/client";
 import { jsonError } from "@/lib/server/http";
 import { requirePlexSession, saveSession } from "@/lib/server/session";
@@ -29,15 +29,6 @@ export async function POST(request: Request) {
 
     if (tracks.length === 0) {
       return Response.json({ error: "The selected playlist has no playable audio tracks." }, { status: 400 });
-    }
-
-    if (tracks.length > MAX_GAME_TRACKS) {
-      return Response.json(
-        {
-          error: `The selected playlist has ${tracks.length} playable tracks. Plexster supports up to ${MAX_GAME_TRACKS} tracks per game session.`
-        },
-        { status: 400 }
-      );
     }
 
     session.game = createGameSession({

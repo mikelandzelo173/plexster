@@ -21,10 +21,6 @@ export function createGameSession(input: {
   tracks: GameTrack[];
   random?: () => number;
 }): GameSession {
-  if (input.tracks.length > MAX_GAME_TRACKS) {
-    throw new Error(`Playlists are limited to ${MAX_GAME_TRACKS} playable tracks.`);
-  }
-
   const queue = shuffleTracks(input.tracks, input.random);
 
   return {

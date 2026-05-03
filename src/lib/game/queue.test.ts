@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { advanceTrack, createGameSession, getCurrentTrack, toPublicTrack } from "./queue";
+import { advanceTrack, createGameSession, getCurrentTrack, MAX_GAME_TRACKS, toPublicTrack } from "./queue";
 import type { GameTrack } from "./types";
 
 const tracks: GameTrack[] = [
@@ -46,5 +46,26 @@ describe("game queue", () => {
   it("uses track-specific stream URLs", () => {
     expect(toPublicTrack(tracks[0], false).streamUrl).toBe("/api/game/stream?trackId=1");
     expect(toPublicTrack(tracks[1], false).streamUrl).toBe("/api/game/stream?trackId=2");
+  });
+
+  it("creates a session when track count exceeds MAX_GAME_TRACKS", () => {
+    const manyTracks: GameTrack[] = Array.from({ length: MAX_GAME_TRACKS + 1 }, (_, index) => ({
+      id: String(index + 1),
+      key: `/library/metadata/${index + 1}`,
+      streamKey: `/library/parts/${index + 1}`,
+      title: `Track ${index + 1}`
+    }));
+
+    const session = createGameSession({
+      id: "session",
+      serverId: "server",
+      playlistKey: "playlist",
+      playlistTitle: "Big playlist",
+      tracks: manyTracks,
+      random: () => 0
+    });
+
+    expect(session.queue.length).toBe(MAX_GAME_TRACKS + 1);
+    expect(getCurrentTrack(session)).toBeDefined();
   });
 });

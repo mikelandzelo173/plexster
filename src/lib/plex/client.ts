@@ -1,6 +1,7 @@
 import { XMLParser } from "fast-xml-parser";
 
 import type { GameTrack } from "@/lib/game/types";
+import { GAME_SESSION_START_TIMEOUT_MS } from "../game-session-timeout-ms";
 import type { PlexLibrary, PlexPlaylist, PlexResource } from "./types";
 
 const PLEX_TV_URL = "https://plex.tv";
@@ -157,15 +158,20 @@ function getOrderedConnections(resource: PlexResource): string[] {
 async function fetchServerXml(
   resource: PlexResource,
   path: string,
-  clientIdentifier: string
+  clientIdentifier: string,
+  timeoutMs: number = PLEX_METADATA_TIMEOUT_MS
 ): Promise<XmlRecord> {
   const errors: string[] = [];
 
   for (const baseUrl of getOrderedConnections(resource)) {
     try {
-      return await fetchXml(`${baseUrl}${path}`, {
-        headers: plexHeaders(clientIdentifier, resource.accessToken)
-      });
+      return await fetchXml(
+        `${baseUrl}${path}`,
+        {
+          headers: plexHeaders(clientIdentifier, resource.accessToken)
+        },
+        timeoutMs
+      );
     } catch (error) {
       errors.push(`${baseUrl}: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
@@ -339,7 +345,12 @@ export async function getPlaylistTracks(input: {
   libraryKey?: string;
 }): Promise<GameTrack[]> {
   const itemsPath = input.playlistKey.endsWith("/items") ? input.playlistKey : `${input.playlistKey}/items`;
-  const data = await fetchServerXml(input.resource, itemsPath, input.clientIdentifier);
+  const data = await fetchServerXml(
+    input.resource,
+    itemsPath,
+    input.clientIdentifier,
+    GAME_SESSION_START_TIMEOUT_MS
+  );
   const container = data.MediaContainer as XmlRecord | undefined;
   const tracks = ensureArray(container?.Track as XmlRecord | XmlRecord[] | undefined);
 

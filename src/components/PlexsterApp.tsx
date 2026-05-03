@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
+import {
+  GAME_SESSION_START_TIMEOUT_MS,
+  SESSION_START_SLOW_UI_AFTER_MS
+} from "@/lib/game-session-timeout-ms";
+import { MAX_GAME_TRACKS } from "@/lib/game/queue";
+
 type Resource = {
   id: string;
   name: string;
@@ -119,6 +125,14 @@ async function requestJson<T>(url: string, init?: JsonRequestInit): Promise<T> {
   }
 }
 
+function formatSessionStartClock(totalMs: number): string {
+  const clamped = Math.max(0, totalMs);
+  const totalSeconds = Math.floor(clamped / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 function BackIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
@@ -167,6 +181,19 @@ function UserIcon() {
     <svg aria-hidden="true" viewBox="0 0 24 24">
       <path d="M12 12C14.2 12 16 10.2 16 8C16 5.8 14.2 4 12 4C9.8 4 8 5.8 8 8C8 10.2 9.8 12 12 12Z" />
       <path d="M4 20C4.6 16.6 7.9 14 12 14C16.1 14 19.4 16.6 20 20H4Z" />
+    </svg>
+  );
+}
+
+function SessionSlowWarningIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path
+        fill="currentColor"
+        fillRule="evenodd"
+        d="M9.401 3.003c1.155-2 4.043-2 5.197 0l7.355 12.748c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.752-2.5-2.598-4.5L9.4 3.003zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a.75.75 0 100-1.5.75.75 0 000 1.5z"
+        clipRule="evenodd"
+      />
     </svg>
   );
 }
@@ -280,6 +307,8 @@ export function PlexsterApp() {
   const [loading, setLoading] = useState(false);
   const [playlistsLoading, setPlaylistsLoading] = useState(false);
   const [startSessionLoading, setStartSessionLoading] = useState(false);
+  const [sessionStartStartedAt, setSessionStartStartedAt] = useState<number | null>(null);
+  const [sessionStartElapsedMs, setSessionStartElapsedMs] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [solutionLoading, setSolutionLoading] = useState(false);
   const [notification, setNotification] = useState<Notification>();
@@ -288,10 +317,26 @@ export function PlexsterApp() {
   const stopModalCancelRef = useRef<HTMLButtonElement>(null);
   const stopDialogTitleId = useId();
   const stopDialogDescId = useId();
+  const [largePlaylistPendingKey, setLargePlaylistPendingKey] = useState<string | null>(null);
+  const largePlaylistModalCancelRef = useRef<HTMLButtonElement>(null);
+  const largePlaylistDialogTitleId = useId();
+  const largePlaylistDialogDescId = useId();
 
   const selectedPlaylist = useMemo(
     () => playlists.find((playlist) => playlist.key === selectedPlaylistKey),
     [playlists, selectedPlaylistKey]
+  );
+
+  const showSessionStartSlowUi =
+    startSessionLoading && sessionStartElapsedMs >= SESSION_START_SLOW_UI_AFTER_MS;
+  const sessionStartRemainingMs = Math.max(0, GAME_SESSION_START_TIMEOUT_MS - sessionStartElapsedMs);
+  const sessionStartTimeoutFillPercent =
+    (sessionStartRemainingMs / GAME_SESSION_START_TIMEOUT_MS) * 100;
+
+  const largePlaylistPending = useMemo(
+    () =>
+      largePlaylistPendingKey ? playlists.find((playlist) => playlist.key === largePlaylistPendingKey) : undefined,
+    [largePlaylistPendingKey, playlists]
   );
   const isSessionActive = Boolean(game?.current);
   const currentTrackId = game?.current?.id;
@@ -373,6 +418,7 @@ export function PlexsterApp() {
     setPlaylists([]);
     setSelectedServerId("");
     setSelectedPlaylistKey("");
+    setLargePlaylistPendingKey(null);
     setPlaylistsLoading(false);
     setStartSessionLoading(false);
     setGame(undefined);
@@ -406,6 +452,23 @@ export function PlexsterApp() {
   }, [notification]);
 
   useEffect(() => clearAudioStalledWarning, [clearAudioStalledWarning]);
+
+  useEffect(() => {
+    if (!startSessionLoading || sessionStartStartedAt === null) {
+      return undefined;
+    }
+
+    const tick = () => {
+      setSessionStartElapsedMs(Math.min(GAME_SESSION_START_TIMEOUT_MS, Date.now() - sessionStartStartedAt));
+    };
+
+    tick();
+    const intervalId = window.setInterval(tick, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [startSessionLoading, sessionStartStartedAt]);
 
   const loadResources = useCallback(async () => {
     setLoading(true);
@@ -504,9 +567,25 @@ export function PlexsterApp() {
     }
   }
 
+  const onPlaylistSelectChange = useCallback((nextKey: string) => {
+    if (nextKey === "") {
+      setSelectedPlaylistKey("");
+      return;
+    }
+
+    const playlist = playlists.find((item) => item.key === nextKey);
+    if (playlist?.leafCount != null && playlist.leafCount > MAX_GAME_TRACKS) {
+      setLargePlaylistPendingKey(nextKey);
+      return;
+    }
+
+    setSelectedPlaylistKey(nextKey);
+  }, [playlists]);
+
   async function selectServer(serverId: string) {
     setSelectedServerId(serverId);
     setSelectedPlaylistKey("");
+    setLargePlaylistPendingKey(null);
     setPlaylists([]);
     setGame(undefined);
 
@@ -539,6 +618,9 @@ export function PlexsterApp() {
       return;
     }
 
+    const sessionStartedAt = Date.now();
+    setSessionStartStartedAt(sessionStartedAt);
+    setSessionStartElapsedMs(0);
     setLoading(true);
     setStartSessionLoading(true);
     setNotification(undefined);
@@ -551,7 +633,8 @@ export function PlexsterApp() {
           serverId: selectedServerId,
           playlistKey: selectedPlaylist.key,
           playlistTitle: selectedPlaylist.title
-        })
+        }),
+        timeoutMs: GAME_SESSION_START_TIMEOUT_MS
       });
       setGame(nextGame);
       setIsPlaying(false);
@@ -563,6 +646,8 @@ export function PlexsterApp() {
     } finally {
       setLoading(false);
       setStartSessionLoading(false);
+      setSessionStartStartedAt(null);
+      setSessionStartElapsedMs(0);
     }
   }
 
@@ -634,6 +719,33 @@ export function PlexsterApp() {
     };
   }, [stopConfirmOpen]);
 
+  useEffect(() => {
+    if (!largePlaylistPendingKey) {
+      return;
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setLargePlaylistPendingKey(null);
+      }
+    }
+
+    window.addEventListener("keydown", closeOnEscape);
+    largePlaylistModalCancelRef.current?.focus();
+
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [largePlaylistPendingKey]);
+
+  function confirmLargePlaylistSelection() {
+    if (largePlaylistPendingKey) {
+      setSelectedPlaylistKey(largePlaylistPendingKey);
+    }
+
+    setLargePlaylistPendingKey(null);
+  }
+
   function restartTrack() {
     if (!audioRef.current) {
       return;
@@ -703,6 +815,45 @@ export function PlexsterApp() {
         </div>
       ) : null}
 
+      {largePlaylistPendingKey ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setLargePlaylistPendingKey(null)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={largePlaylistDialogTitleId}
+            aria-describedby={largePlaylistDialogDescId}
+            className="modal-panel"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id={largePlaylistDialogTitleId} className="modal-title">
+              Large playlist
+            </h2>
+            <p id={largePlaylistDialogDescId} className="modal-body">
+              This playlist lists{" "}
+              {largePlaylistPending?.leafCount != null ? (
+                <strong>{largePlaylistPending.leafCount}</strong>
+              ) : (
+                "many"
+              )}{" "}
+              tracks. Playlists with more than {MAX_GAME_TRACKS} tracks may cause performance or stability issues.
+            </p>
+            <div className="modal-actions">
+              <button
+                type="button"
+                ref={largePlaylistModalCancelRef}
+                className="modal-cancel"
+                onClick={() => setLargePlaylistPendingKey(null)}
+              >
+                Cancel
+              </button>
+              <button type="button" className="primary" onClick={confirmLargePlaylistSelection}>
+                Use this playlist
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {!isSessionActive ? (
         <section className="app-section connect-section">
           {connected ? (
@@ -734,50 +885,90 @@ export function PlexsterApp() {
       ) : null}
 
       {connected && !isSessionActive ? (
-        <section className="app-section">
-          <h2>Select source</h2>
-          <div className="grid two-column source-grid">
-            <SelectField
-              label="Plex server"
-              value={selectedServerId}
-              placeholder="Choose server"
-              options={resources.map((resource) => ({ value: resource.id, label: resource.name }))}
-              onChange={(nextServerId) => void selectServer(nextServerId)}
-            />
+        <>
+          <section className="app-section">
+            <h2>Select source</h2>
+            <div className="grid two-column source-grid">
+              <SelectField
+                label="Plex server"
+                value={selectedServerId}
+                placeholder="Choose server"
+                options={resources.map((resource) => ({ value: resource.id, label: resource.name }))}
+                onChange={(nextServerId) => void selectServer(nextServerId)}
+              />
 
-            {selectedServerId ? (
-              playlistsLoading || playlists.length ? (
-                <SelectField
-                  label="Playlist"
-                  value={selectedPlaylistKey}
-                  placeholder={playlistsLoading ? "Loading playlists..." : "Choose playlist"}
-                  options={playlists.map((playlist) => ({
-                    value: playlist.key,
-                    label: `${playlist.title}${playlist.leafCount ? ` (${playlist.leafCount})` : ""}`
-                  }))}
-                  disabled={playlistsLoading}
-                  onChange={setSelectedPlaylistKey}
-                />
-              ) : (
-                <div className="field-message" role="status">
-                  No playlists are available for this server.
+              {selectedServerId ? (
+                playlistsLoading || playlists.length ? (
+                  <SelectField
+                    label="Playlist"
+                    value={selectedPlaylistKey}
+                    placeholder={playlistsLoading ? "Loading playlists..." : "Choose playlist"}
+                    options={playlists.map((playlist) => ({
+                      value: playlist.key,
+                      label: `${playlist.title}${playlist.leafCount ? ` (${playlist.leafCount})` : ""}`
+                    }))}
+                    disabled={playlistsLoading}
+                    onChange={onPlaylistSelectChange}
+                  />
+                ) : (
+                  <div className="field-message" role="status">
+                    No playlists are available for this server.
+                  </div>
+                )
+              ) : null}
+            </div>
+            {selectedPlaylistKey ? (
+              <div className="start-session-block">
+                <div className="start-session-button-wrap">
+                  <button className="primary start-session-button" disabled={loading} onClick={startGame}>
+                    {startSessionLoading ? (
+                      <>
+                        <span className="button-spinner" aria-hidden="true" />
+                        Loading
+                      </>
+                    ) : (
+                      "Start play session"
+                    )}
+                  </button>
                 </div>
-              )
+              </div>
             ) : null}
-          </div>
-          {selectedPlaylistKey ? (
-            <button className="primary start-session-button" disabled={loading} onClick={startGame}>
-              {startSessionLoading ? (
-                <>
-                  <span className="button-spinner" aria-hidden="true" />
-                  Loading
-                </>
-              ) : (
-                "Start play session"
-              )}
-            </button>
+          </section>
+          {showSessionStartSlowUi ? (
+            <section className="app-section">
+              <div className="session-start-slow-banner" role="status" aria-live="polite">
+                <span className="session-start-slow-banner-icon" aria-hidden="true">
+                  <SessionSlowWarningIcon />
+                </span>
+                <div className="session-start-slow-banner-copy">
+                  <p className="session-start-slow-warning">
+                    This is taking longer than usual and is often due to a very large playlist or a busy Plex
+                    server. The request may still be successful. If it times out, try again or use a smaller
+                    playlist.
+                  </p>
+                  <p className="session-start-slow-times">
+                    <span className="session-start-time-value">
+                      Time left until timeout: {formatSessionStartClock(sessionStartRemainingMs)}
+                    </span>
+                  </p>
+                  <div
+                    className="session-start-timeout-track"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={GAME_SESSION_START_TIMEOUT_MS}
+                    aria-valuenow={Math.round(sessionStartRemainingMs)}
+                    aria-label="Time remaining before the start request may time out"
+                  >
+                    <div
+                      className="session-start-timeout-fill"
+                      style={{ width: `${sessionStartTimeoutFillPercent}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
           ) : null}
-        </section>
+        </>
       ) : null}
 
       {connected && selectedServerId && selectedPlaylistKey && game?.current ? (
